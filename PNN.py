@@ -4,21 +4,66 @@ import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 
 
-class ProgressiveNeuralNetwork:
+class ProgressiveNeuralNetwork(nn.Module):
     """
     Une classe représentant un réseau de neurones progressif (PNN) pour l'apprentissage multi-tâches.
     Chaque tâche est apprise par une colonne neuronale distincte, avec des connexions latérales entre les 
     colonnes pour permettre le transfert de connaissances et éviter les oublis catastrophiques.
     """
-
-    def __init__(self):
+    
+    def __init__(self, input_size, hidden_size):
         """
         Initialiser une nouvelle instance de ProgressiveNeuralNetwork.
         """
-        self.columns = []  # Liste contenant les colonnes neuronales correspondant aux tâches
+        super().__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.columns = nn.ModuleList()  # Use ModuleList to register modules
         self.hidden_outputs = []  # Liste contenant les sorties des couches cachées pour les connexions latérales
         self.criterion = nn.CrossEntropyLoss()
         torch.manual_seed(0)  # pour la reproductibilité
+
+    def prune(self, percentage):
+        """
+        Prune the network by actually removing weights with smallest magnitude.
+        This creates new, smaller weight matrices.
+        
+        Args:
+            percentage: Percentage of weights to prune (0-100)
+        """
+        import torch.nn.utils.prune as prune
+        
+        for column in self.columns:
+            for module in column.modules():
+                if isinstance(module, nn.Linear):
+                    # First apply the pruning mask
+                    prune.l1_unstructured(module, name='weight', amount=percentage / 100)
+                    
+                    # Then permanently remove it (converts mask to actual zeros in parameter)
+                    prune.remove(module, 'weight')
+                    
+                    # Now filter out the zero rows/columns by creating new smaller weight matrix
+                    weight = module.weight.data
+                    bias = module.bias.data if module.bias is not None else None
+                    
+                    # Find which rows (output neurons) have any non-zero values
+                    active_rows = (weight.abs().sum(dim=1) > 0)
+                    
+                    if active_rows.sum() > 0 and active_rows.sum() < weight.shape[0]:
+                        # Create new layer with fewer output neurons
+                        new_out_features = active_rows.sum().item()
+                        new_linear = nn.Linear(module.in_features, new_out_features)
+                        
+                        # Copy the active rows
+                        new_linear.weight.data = weight[active_rows, :]
+                        if bias is not None:
+                            new_linear.bias.data = bias[active_rows]
+                        
+                        # Replace the old module in-place
+                        # Find parent and replace
+                        for parent_name, parent in column.named_children():
+                            if parent is module:
+                                setattr(column, parent_name, new_linear)
 
     class Column(nn.Module):
         """

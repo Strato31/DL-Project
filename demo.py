@@ -316,7 +316,7 @@ print("\n" + "=" * 80)
 print("MÉTHODE 3 : PROGRESSIVE NEURAL NETWORK (PNN)")
 print("=" * 80)
 
-pnn = ProgressiveNeuralNetwork()
+pnn = ProgressiveNeuralNetwork(input_size=FEATURE_DIM, hidden_size=HIDDEN_DIM)
 accs_pnn_before = []
 
 for i, task in enumerate(tasks):
@@ -446,4 +446,106 @@ print("Graphique de l'oubli enregistré dans comparison_forgetting.png")
 
 print("\n" + "=" * 80)
 print("OK - Comparaison terminée!")
+print("=" * 80)
+
+
+
+#####################################
+# Tests : Pruning PNN               #
+#####################################
+
+print("\n" + "=" * 80)
+print("TEST DE PRUNING SUR LE PNN ENTRAÎNÉ")
+print("=" * 80)
+
+total_params = sum(p.numel() for p in pnn.parameters())
+print(f"   --> Nombre total de paramètres : {total_params}")
+
+if total_params == 0:
+    print("   Attention : Aucun paramètre détecté. Vérifiez que le modèle est bien entraîné.")
+else:
+    # Sauvegarder l'état du modèle avant pruning
+    import copy
+    original_state = copy.deepcopy(pnn.state_dict())
+    
+    prune_percents = [0, 0.2, 0.4, 0.6, 0.8]
+    pruning_results = []
+    
+    for perc in prune_percents:
+        # Restaurer l'état original pour chaque test de pruning
+        pnn.load_state_dict(copy.deepcopy(original_state))
+        
+        if perc > 0:
+            # Afficher un diagnostic avant pruning
+            weights_before = [p.clone() for p in pnn.parameters()]
+            pnn.prune(perc)
+            # Vérifier que les poids ont changé
+            weights_after = list(pnn.parameters())
+            changed = 0
+            for w1, w2 in zip(weights_before, weights_after):
+                if w1.shape == w2.shape:
+                    changed += (w1 != w2).sum().item()
+            print(f"   [DEBUG] Pruning {int(perc*100)}%: {changed} poids modifiés")
+        
+        # Compter les poids à zéro (neurones prunés)
+        zero_params = sum((p == 0).sum().item() for p in pnn.parameters())
+        non_zero_params = total_params - zero_params
+        sparsity = 100 * zero_params / total_params if total_params > 0 else 0
+        
+        # Évaluer les performances après pruning
+        try:
+            accs_after_prune = []
+            for i, task in enumerate(tasks):
+                acc = pnn.accuracy(task['features'], task['labels'], task_index=i)
+                accs_after_prune.append(acc)
+            avg_acc = sum(accs_after_prune) / len(accs_after_prune)
+            
+            pruning_results.append({
+                'percentage': int(perc * 100),
+                'sparsity': sparsity,
+                'zero_params': zero_params,
+                'active_params': non_zero_params,
+                'accuracies': accs_after_prune,
+                'avg_accuracy': avg_acc
+            })
+        except Exception as e:
+            print(f"   Erreur lors de l'évaluation après pruning {int(perc*100)}% : {e}")
+    
+    # Affichage sous forme de tableau
+    print("\n" + "=" * 80)
+    print("TABLEAU DES RÉSULTATS DE PRUNING")
+    print("=" * 80)
+    print(f"┌───────────┬─────────────┬─────────────┬─────────────┐")
+    print(f"│ Sparsité  │ Poids zéro  │ Poids actifs│ Acc. moyenne│")
+    print(f"├───────────┼─────────────┼─────────────┼─────────────┤")
+    for result in pruning_results:
+        print(f"│  {result['sparsity']:>6.2f}% │ {result['zero_params']:>11} │ {result['active_params']:>12} │   {result['avg_accuracy']:>6.2f}%   │")
+    print(f"└───────────┴─────────────┴─────────────┴─────────────┘")
+    
+    # Graphique des résultats
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+    
+    pruning_levels = [r['percentage'] for r in pruning_results]
+    avg_accs = [r['avg_accuracy'] for r in pruning_results]
+    
+    # Précision moyenne
+    ax.plot(pruning_levels, avg_accs, 's-', linewidth=2.5, markersize=10, color='tab:orange', label='Acc. moyenne', zorder=3)
+    
+    # Ajouter les précisions individuelles par tâche
+    for task_idx in range(len(tasks)):
+        task_accs = [r['accuracies'][task_idx] for r in pruning_results]
+        ax.plot(pruning_levels, task_accs, '--', alpha=0.6, marker='o', markersize=6, label=f'Tâche {task_idx+1}')
+    
+    ax.set_xlabel('Sparsité (%)', fontsize=13)
+    ax.set_ylabel('Précision (%)', fontsize=13)
+    ax.set_title('Impact du pruning sur la précision', fontsize=15, fontweight='bold')
+    ax.legend(loc='best', fontsize=10)
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig('pruning_results.png', dpi=150, bbox_inches='tight')
+    print(f"\nGraphique des résultats de pruning enregistré dans pruning_results.png")
+
+print("\n" + "=" * 80)
+print("OK - Test de pruning terminé!")
 print("=" * 80)
