@@ -1,20 +1,3 @@
-"""
-Comparaison de 3 méthodes pour l'apprentissage multi-tâches
-Utilise le dataset emotion trouvable sur HuggingFace, qui contient des textes labellisés selon 6 émotions. 
-Les 6 émotions du dataset : 0=sadness, 1=joy, 2=love, 3=anger, 4=fear, 5=surprise
-
-Avec ce dataset, on se propose de réaliser 2 tâches de classification d'émotions :
-- Tâche 1 : Emotion binaire (négatif [0,3,4] versus positif [1,2,5])
-- Tâche 2 : Émotions négatives détail (sadness=0, anger=1, fear=2)
-
-On compare 3 méthodes d'apprentissage multi-tâches :
-1. Modèles Indépendants : Un modèle par tâche (témoin)
-2. Fine-tuning : Entraîner sur Tâche 1 puis fine-tuner sur Tâche 2
-3. PNN : Progressive Neural Network avec connexions latérales
-
-Enfin, en ouverture, on teste l'impact du pruning sur le modèle PNN entraîné.
-"""
-
 import torch
 import numpy as np
 from torch import nn, optim
@@ -32,11 +15,13 @@ HIDDEN_DIM = 64         # Dimension de la couche cachée
 EPOCHS = 100            # Époques d'entraînement
 BATCH_SIZE = 32         # Taille du batch
 
+####### PARAMETRES POUVANT ÊTRE MODIFIÉS #######
 # Configuration des tâches à comparer (mettre dans l'ordre souhaité ici)
 TASK_ORDER = ['binaire', 'negative', 'positive', 'full']
 NUM_TASKS = 4  # entre 2 et 4 : par exemple 3 pour comparer 3 tâches successives
 # Choix des pourcentages de pruning à tester
 prune_percents = [0, 1, 5, 10, 20]
+################################################
 
 print("=" * 80)
 print("COMPARAISON DE MÉTHODES - DATASET emotion")
@@ -192,7 +177,7 @@ for idx, task_type in enumerate(TASK_ORDER[:NUM_TASKS]):
         'test_labels': test_labs,
         'num_classes': num_classes,
     })
-    print(f"   Tâche {i+1} : {name}")
+    print(f"   Tâche {idx+1} : {name}")
     print(f"           --> Train: {len(train_feats)}, Test: {len(test_feats)}")
     print(f"           --> {num_classes} classes")
 
@@ -203,6 +188,7 @@ print("\n" + "=" * 80)
 print("MÉTHODE 1 : MODÈLES INDÉPENDANTS (Baseline)")
 print("=" * 80)
 
+# Définition du modèle simple
 class SimpleClassifier(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
         super().__init__()
@@ -225,7 +211,7 @@ def train_model(features, labels, hidden_dim, output_dim, epochs, batch_size):
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     
     model.train()
-    for epoch in range(epochs):
+    for _ in range(epochs):
         for batch_data, batch_labels in loader:
             optimizer.zero_grad()
             outputs = model(batch_data)
@@ -497,7 +483,7 @@ else:
         # Compter les poids à zéro (neurones prunés)
         zero_params = sum((p == 0).sum().item() for p in pnn.parameters())
         non_zero_params = total_params - zero_params
-        sparsity = 100 * zero_params / total_params if total_params > 0 else 0
+        sparsity = 100*zero_params / total_params if total_params > 0 else 0
         
         # Évaluer les performances après pruning sur TRAIN et TEST
         try:
@@ -516,7 +502,7 @@ else:
             avg_acc_test = sum(accs_test) / len(accs_test)
             
             pruning_results.append({
-                'percentage': int(perc * 100),
+                'percentage': perc,
                 'sparsity': sparsity,
                 'zero_params': zero_params,
                 'active_params': non_zero_params,

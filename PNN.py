@@ -22,48 +22,56 @@ class ProgressiveNeuralNetwork(nn.Module):
         self.hidden_outputs = []  # Liste contenant les sorties des couches cachées pour les connexions latérales
         self.criterion = nn.CrossEntropyLoss()
         torch.manual_seed(0)  # pour la reproductibilité
-
+    
     def prune(self, percentage):
-        """
-        Élaguer (Prune) le réseau en supprimant réellement les poids de plus petite magnitude.
-        De cette manière, on crée des nouvelles matrices de poids plus petites.
-        
-        Args:
-            percentage: Pourcentage de poids à élaguer (0-100)
-        """
         import torch.nn.utils.prune as prune
-        
         for column in self.columns:
-            for module in column.modules():
+            for name, module in column.named_modules():
                 if isinstance(module, nn.Linear):
-                    # On commence par appliquer le masque de pruning
-                    prune.l1_unstructured(module, name='weight', amount=percentage / 100)
-                    
-                    # Ensuite, on supprime définitivement les poids (convertit le masque en zéros réels dans le paramètre)
+                    prune.l1_unstructured(module, name='weight', amount=percentage/100)
                     prune.remove(module, 'weight')
+
+    # def prune(self, percentage):
+    #     """
+    #     Élaguer (Prune) le réseau en supprimant réellement les poids de plus petite magnitude.
+    #     De cette manière, on crée des nouvelles matrices de poids plus petites.
+        
+    #     Args:
+    #         percentage: Pourcentage de poids à élaguer (0-100)
+    #     """
+    #     import torch.nn.utils.prune as prune
+        
+    #     for column in self.columns:
+    #         for module in column.modules():
+    #             if isinstance(module, nn.Linear):
+    #                 # On commence par appliquer le masque de pruning
+    #                 prune.l1_unstructured(module, name='weight', amount=percentage / 100)
                     
-                    # Maintenant, filtrer les lignes/colonnes nulles en créant une nouvelle matrice de poids plus petite
-                    weight = module.weight.data
-                    bias = module.bias.data if module.bias is not None else None
+    #                 # Ensuite, on supprime définitivement les poids (convertit le masque en zéros réels dans le paramètre)
+    #                 prune.remove(module, 'weight')
                     
-                    # Trouver quelles lignes (neurones de sortie) ont des valeurs non nulles
-                    active_rows = (weight.abs().sum(dim=1) > 0)
+    #                 # Maintenant, filtrer les lignes/colonnes nulles en créant une nouvelle matrice de poids plus petite
+    #                 weight = module.weight.data
+    #                 bias = module.bias.data if module.bias is not None else None
                     
-                    if active_rows.sum() > 0 and active_rows.sum() < weight.shape[0]:
-                        # Créer une nouvelle couche linéaire de dimension réduite
-                        new_out_features = active_rows.sum().item()
-                        new_linear = nn.Linear(module.in_features, new_out_features)
+    #                 # Trouver quelles lignes (neurones de sortie) ont des valeurs non nulles
+    #                 active_rows = (weight.abs().sum(dim=1) > 0)
+                    
+    #                 if active_rows.sum() > 0 and active_rows.sum() < weight.shape[0]:
+    #                     # Créer une nouvelle couche linéaire de dimension réduite
+    #                     new_out_features = active_rows.sum().item()
+    #                     new_linear = nn.Linear(module.in_features, new_out_features)
                         
-                        # Copier les lignes actives dans la nouvelle couche
-                        new_linear.weight.data = weight[active_rows, :]
-                        if bias is not None:
-                            new_linear.bias.data = bias[active_rows]
+    #                     # Copier les lignes actives dans la nouvelle couche
+    #                     new_linear.weight.data = weight[active_rows, :]
+    #                     if bias is not None:
+    #                         new_linear.bias.data = bias[active_rows]
                         
-                        # Remplacer l'ancien module sur place
-                        # On doit parcourir les attributs du parent pour faire le remplacement
-                        for parent_name, parent in column.named_children():
-                            if parent is module:
-                                setattr(column, parent_name, new_linear)
+    #                     # Remplacer l'ancien module sur place
+    #                     # On doit parcourir les attributs du parent pour faire le remplacement
+    #                     for parent_name, parent in column.named_children():
+    #                         if parent is module:
+    #                             setattr(column, parent_name, new_linear)
 
     class Column(nn.Module):
         """
