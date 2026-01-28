@@ -11,6 +11,8 @@ On compare 3 méthodes d'apprentissage multi-tâches :
 1. Modèles Indépendants : Un modèle par tâche (témoin)
 2. Fine-tuning : Entraîner sur Tâche 1 puis fine-tuner sur Tâche 2
 3. PNN : Progressive Neural Network avec connexions latérales
+
+Enfin, en ouverture, on teste l'impact du pruning sur le modèle PNN entraîné.
 """
 
 import torch
@@ -21,7 +23,6 @@ from datasets import load_dataset, load_from_disk
 from transformers import AutoTokenizer
 from pathlib import Path
 from PNN import ProgressiveNeuralNetwork
-import time
 import matplotlib.pyplot as plt
 
 # Configuration
@@ -31,9 +32,11 @@ HIDDEN_DIM = 64         # Dimension de la couche cachée
 EPOCHS = 100            # Époques d'entraînement
 BATCH_SIZE = 32         # Taille du batch
 
-# Configuration des tâches à comparer (ordonner ici)
-TASK_ORDER = ['binaire', 'negative', 'positive', 'full']  # choisissez 2, 3 ou 4 tâches
-NUM_TASKS = 4  # par exemple 3 pour comparer 3 tâches successives
+# Configuration des tâches à comparer (mettre dans l'ordre souhaité ici)
+TASK_ORDER = ['binaire', 'negative', 'positive', 'full']
+NUM_TASKS = 4  # entre 2 et 4 : par exemple 3 pour comparer 3 tâches successives
+# Choix des pourcentages de pruning à tester
+prune_percents = [0, 1, 5, 10, 20]
 
 print("=" * 80)
 print("COMPARAISON DE MÉTHODES - DATASET emotion")
@@ -46,9 +49,9 @@ print("=" * 80)
 # PRÉPARATION DES DONNÉES
 # ============================================================================
 print("\n[PRÉPARATION] Chargement du dataset texte...")
-#si données pas dans le dossier data, les télécharger
-saved_path = Path("data") / "emotion_text_dataset" / "saved"
 
+#si données pas déjà dans le dossier data, les télécharger
+saved_path = Path("data") / "emotion_text_dataset" / "saved"
 if not saved_path.exists():
     print("   --> Téléchargement du dataset emotion depuis HuggingFace...")
     dataset = load_dataset("emotion")
@@ -58,7 +61,8 @@ else:
     print("   --> Chargement du dataset emotion depuis le disque...")
     dataset = load_from_disk(str(saved_path))
 
-text_data = dataset['train']
+# Extraction des données textuelles et tokenization
+train_data, test_data = dataset['train'], dataset['test']
 tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
 
 # Mapping des labels d'émotions
@@ -154,10 +158,11 @@ def create_task_data(original_features, original_labels, task_type, num_samples)
     
     return original_features, new_labels
 
-# Extraire toutes les features une fois
+# Extraire les features pour train et test
 print("   --> Extraction des features...")
-all_features, all_labels = extract_features(text_data, 5000)
-print(f"   OK - {len(all_features)} échantillons extraits")
+train_features, train_labels = extract_features(train_data, 5000)
+test_features, test_labels = extract_features(test_data, 2000)
+print(f"   OK - Train: {len(train_features)}, Test: {len(test_features)} échantillons extraits")
 
 
 
@@ -168,21 +173,28 @@ task_meta = {
     'full': ("Toutes Émotions (6 classes)", 6),
 }
 
-# Créer dynamiquement les tâches
+# Créer dynamiquement les tâches en utilisant train/val/test
 print("\n[TÂCHES DÉFINIES]")
 tasks = []
 for idx, task_type in enumerate(TASK_ORDER[:NUM_TASKS]):
     name, num_classes = task_meta[task_type]
-    feats, labs = create_task_data(all_features, all_labels, task_type, NUM_SAMPLES)
+    
+    # Créer les données pour chaque split
+    train_feats, train_labs = create_task_data(train_features, train_labels, task_type, NUM_SAMPLES)
+    test_feats, test_labs = create_task_data(test_features, test_labels, task_type, NUM_SAMPLES // 2)
+    
     tasks.append({
         'name': name,
         'type': task_type,
-        'features': feats,
-        'labels': labs,
+        'features': train_feats,      # Pour entraînement
+        'labels': train_labs,
+        'test_features': test_feats,  # Pour test
+        'test_labels': test_labs,
         'num_classes': num_classes,
     })
-    print(f"   Tâche {idx+1} : {name}")
-    print(f"           --> {len(feats)} échantillons, {num_classes} classes")
+    print(f"   Tâche {i+1} : {name}")
+    print(f"           --> Train: {len(train_feats)}, Test: {len(test_feats)}")
+    print(f"           --> {num_classes} classes")
 
 # ============================================================================
 # MÉTHODE 1 : MODÈLES INDÉPENDANTS (BASELINE)
@@ -234,20 +246,22 @@ def evaluate_model(model, features, labels):
         accuracy = 100 * correct / len(labels)
     return accuracy
 
-# Clone proprement un state_dict pour éviter le partage de tenseurs
 def clone_state_dict(state_dict):
+    """Clone proprement un state_dict pour éviter le partage de 
+    tenseurs lors de la phase de fine-tuning
+    """
     return {k: v.clone() for k, v in state_dict.items()}
 
-accs_independent = []
-models_independent = []
+accs_independent = [] # stocke les accuracies des modèles indépendants
+models_independent = [] # stocke les modèles indépendants
 
 for i, task in enumerate(tasks):
     print(f"   --> Entraînement Tâche {i+1} ({task['name']})...")
     model = train_model(task['features'], task['labels'], HIDDEN_DIM, task['num_classes'], EPOCHS, BATCH_SIZE)
-    acc = evaluate_model(model, task['features'], task['labels'])
+    acc = evaluate_model(model, task['test_features'], task['test_labels'])
     models_independent.append(model)
     accs_independent.append(acc)
-    print(f"       OK - Précision : {acc:.2f}%")
+    print(f"       OK - Précision (Test) : {acc:.2f}%")
 
 print(f"\n   RÉSULTATS :")
 for i, task in enumerate(tasks):
@@ -265,9 +279,9 @@ model_finetuned = train_model(tasks[0]['features'], tasks[0]['labels'], HIDDEN_D
                               tasks[0]['num_classes'], EPOCHS, BATCH_SIZE)
 
 # Accuracies courantes (après apprentissage de chaque tâche)
-accs_finetune_current = [evaluate_model(model_finetuned, tasks[0]['features'], tasks[0]['labels'])]
+accs_finetune_current = [evaluate_model(model_finetuned, tasks[0]['test_features'], tasks[0]['test_labels'])]
 saved_fc2_states = [clone_state_dict(model_finetuned.fc2.state_dict())]
-print(f"   OK - Tâche 1 : {accs_finetune_current[0]:.2f}%")
+print(f"   OK - Tâche 1 (Test) : {accs_finetune_current[0]:.2f}%")
 
 # Fine-tuning séquentiel pour les autres tâches
 for i in range(1, len(tasks)):
@@ -291,17 +305,17 @@ for i in range(1, len(tasks)):
             loss.backward()
             optimizer.step()
 
-    acc_current = evaluate_model(model_finetuned, task['features'], task['labels'])
+    acc_current = evaluate_model(model_finetuned, task['test_features'], task['test_labels'])
     accs_finetune_current.append(acc_current)
     saved_fc2_states.append(clone_state_dict(model_finetuned.fc2.state_dict()))
-    print(f"       OK - Précision Tâche {i+1} : {acc_current:.2f}%")
+    print(f"       OK - Précision Tâche {i+1} (Test) : {acc_current:.2f}%")
 
 # Évaluer l'oubli pour toutes les tâches en restaurant leurs couches
 accs_finetune_final = []
 for i, task in enumerate(tasks):
     model_finetuned.fc2 = nn.Linear(HIDDEN_DIM, task['num_classes'])
     model_finetuned.fc2.load_state_dict(saved_fc2_states[i])
-    acc = evaluate_model(model_finetuned, task['features'], task['labels'])
+    acc = evaluate_model(model_finetuned, task['test_features'], task['test_labels'])
     accs_finetune_final.append(acc)
 
 print(f"\n   RÉSULTATS :")
@@ -323,14 +337,14 @@ for i, task in enumerate(tasks):
     print(f"   --> Entraînement Tâche {i+1} ({task['name']})...")
     pnn.train_new_task(task['features'], task['labels'], hidden_dim=HIDDEN_DIM,
                        epochs=EPOCHS, batch_size=BATCH_SIZE)
-    acc = pnn.accuracy(task['features'], task['labels'], task_index=i)
+    acc = pnn.accuracy(task['test_features'], task['test_labels'], task_index=i)
     accs_pnn_before.append(acc)
-    print(f"       OK - Précision Tâche {i+1} : {acc:.2f}%")
+    print(f"       OK - Précision Tâche {i+1} (Test) : {acc:.2f}%")
 
 # Évaluer toutes les tâches après entraînement complet
 accs_pnn_after = []
 for i, task in enumerate(tasks):
-    acc = pnn.accuracy(task['features'], task['labels'], task_index=i)
+    acc = pnn.accuracy(task['test_features'], task['test_labels'], task_index=i)
     accs_pnn_after.append(acc)
 
 print(f"\n   RÉSULTATS :")
@@ -444,11 +458,6 @@ plt.tight_layout()
 plt.savefig("comparison_forgetting.png", dpi=150)
 print("Graphique de l'oubli enregistré dans comparison_forgetting.png")
 
-print("\n" + "=" * 80)
-print("OK - Comparaison terminée!")
-print("=" * 80)
-
-
 
 #####################################
 # Tests : Pruning PNN               #
@@ -468,7 +477,6 @@ else:
     import copy
     original_state = copy.deepcopy(pnn.state_dict())
     
-    prune_percents = [0, 0.2, 0.4, 0.6, 0.8]
     pruning_results = []
     
     for perc in prune_percents:
@@ -485,28 +493,37 @@ else:
             for w1, w2 in zip(weights_before, weights_after):
                 if w1.shape == w2.shape:
                     changed += (w1 != w2).sum().item()
-            print(f"   [DEBUG] Pruning {int(perc*100)}%: {changed} poids modifiés")
         
         # Compter les poids à zéro (neurones prunés)
         zero_params = sum((p == 0).sum().item() for p in pnn.parameters())
         non_zero_params = total_params - zero_params
         sparsity = 100 * zero_params / total_params if total_params > 0 else 0
         
-        # Évaluer les performances après pruning
+        # Évaluer les performances après pruning sur TRAIN et TEST
         try:
-            accs_after_prune = []
+            # Évaluation sur train
+            accs_train = []
             for i, task in enumerate(tasks):
                 acc = pnn.accuracy(task['features'], task['labels'], task_index=i)
-                accs_after_prune.append(acc)
-            avg_acc = sum(accs_after_prune) / len(accs_after_prune)
+                accs_train.append(acc)
+            avg_acc_train = sum(accs_train) / len(accs_train)
+            
+            # Évaluation sur test
+            accs_test = []
+            for i, task in enumerate(tasks):
+                acc = pnn.accuracy(task['test_features'], task['test_labels'], task_index=i)
+                accs_test.append(acc)
+            avg_acc_test = sum(accs_test) / len(accs_test)
             
             pruning_results.append({
                 'percentage': int(perc * 100),
                 'sparsity': sparsity,
                 'zero_params': zero_params,
                 'active_params': non_zero_params,
-                'accuracies': accs_after_prune,
-                'avg_accuracy': avg_acc
+                'train_accuracies': accs_train,
+                'test_accuracies': accs_test,
+                'avg_train': avg_acc_train,
+                'avg_test': avg_acc_test
             })
         except Exception as e:
             print(f"   Erreur lors de l'évaluation après pruning {int(perc*100)}% : {e}")
@@ -515,31 +532,28 @@ else:
     print("\n" + "=" * 80)
     print("TABLEAU DES RÉSULTATS DE PRUNING")
     print("=" * 80)
-    print(f"┌───────────┬─────────────┬─────────────┬─────────────┐")
-    print(f"│ Sparsité  │ Poids zéro  │ Poids actifs│ Acc. moyenne│")
-    print(f"├───────────┼─────────────┼─────────────┼─────────────┤")
+    print(f"┌───────────┬─────────────┬─────────────┬─────────────┬──────────┐")
+    print(f"│ Sparsité  │ Poids zéro  │ Poids actifs│Acc. Train %│Acc. Test%│")
+    print(f"├───────────┼─────────────┼─────────────┼─────────────┼──────────┤")
     for result in pruning_results:
-        print(f"│  {result['sparsity']:>6.2f}% │ {result['zero_params']:>11} │ {result['active_params']:>12} │   {result['avg_accuracy']:>6.2f}%   │")
-    print(f"└───────────┴─────────────┴─────────────┴─────────────┘")
+        print(f"│  {result['sparsity']:>6.2f}% │ {result['zero_params']:>11} │ {result['active_params']:>12} │   {result['avg_train']:>6.2f}%   │ {result['avg_test']:>6.2f}% │")
+    print(f"└───────────┴─────────────┴─────────────┴─────────────┴──────────┘")
     
     # Graphique des résultats
-    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+    fig, ax = plt.subplots(1, 1, figsize=(12, 6))
     
     pruning_levels = [r['percentage'] for r in pruning_results]
-    avg_accs = [r['avg_accuracy'] for r in pruning_results]
+    train_accs = [r['avg_train'] for r in pruning_results]
+    test_accs = [r['avg_test'] for r in pruning_results]
     
-    # Précision moyenne
-    ax.plot(pruning_levels, avg_accs, 's-', linewidth=2.5, markersize=10, color='tab:orange', label='Acc. moyenne', zorder=3)
-    
-    # Ajouter les précisions individuelles par tâche
-    for task_idx in range(len(tasks)):
-        task_accs = [r['accuracies'][task_idx] for r in pruning_results]
-        ax.plot(pruning_levels, task_accs, '--', alpha=0.6, marker='o', markersize=6, label=f'Tâche {task_idx+1}')
+    # Tracer train et test
+    ax.plot(pruning_levels, train_accs, 'o-', linewidth=2.5, markersize=10, label='Train', color='tab:green')
+    ax.plot(pruning_levels, test_accs, '^-', linewidth=2.5, markersize=10, label='Test', color='tab:red')
     
     ax.set_xlabel('Sparsité (%)', fontsize=13)
-    ax.set_ylabel('Précision (%)', fontsize=13)
-    ax.set_title('Impact du pruning sur la précision', fontsize=15, fontweight='bold')
-    ax.legend(loc='best', fontsize=10)
+    ax.set_ylabel('Précision moyenne (%)', fontsize=13)
+    ax.set_title('Impact du pruning sur la précision (Train/Test)', fontsize=15, fontweight='bold')
+    ax.legend(loc='best', fontsize=11)
     ax.grid(True, alpha=0.3)
     
     plt.tight_layout()

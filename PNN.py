@@ -25,42 +25,42 @@ class ProgressiveNeuralNetwork(nn.Module):
 
     def prune(self, percentage):
         """
-        Prune the network by actually removing weights with smallest magnitude.
-        This creates new, smaller weight matrices.
+        Élaguer (Prune) le réseau en supprimant réellement les poids de plus petite magnitude.
+        De cette manière, on crée des nouvelles matrices de poids plus petites.
         
         Args:
-            percentage: Percentage of weights to prune (0-100)
+            percentage: Pourcentage de poids à élaguer (0-100)
         """
         import torch.nn.utils.prune as prune
         
         for column in self.columns:
             for module in column.modules():
                 if isinstance(module, nn.Linear):
-                    # First apply the pruning mask
+                    # On commence par appliquer le masque de pruning
                     prune.l1_unstructured(module, name='weight', amount=percentage / 100)
                     
-                    # Then permanently remove it (converts mask to actual zeros in parameter)
+                    # Ensuite, on supprime définitivement les poids (convertit le masque en zéros réels dans le paramètre)
                     prune.remove(module, 'weight')
                     
-                    # Now filter out the zero rows/columns by creating new smaller weight matrix
+                    # Maintenant, filtrer les lignes/colonnes nulles en créant une nouvelle matrice de poids plus petite
                     weight = module.weight.data
                     bias = module.bias.data if module.bias is not None else None
                     
-                    # Find which rows (output neurons) have any non-zero values
+                    # Trouver quelles lignes (neurones de sortie) ont des valeurs non nulles
                     active_rows = (weight.abs().sum(dim=1) > 0)
                     
                     if active_rows.sum() > 0 and active_rows.sum() < weight.shape[0]:
-                        # Create new layer with fewer output neurons
+                        # Créer une nouvelle couche linéaire de dimension réduite
                         new_out_features = active_rows.sum().item()
                         new_linear = nn.Linear(module.in_features, new_out_features)
                         
-                        # Copy the active rows
+                        # Copier les lignes actives dans la nouvelle couche
                         new_linear.weight.data = weight[active_rows, :]
                         if bias is not None:
                             new_linear.bias.data = bias[active_rows]
                         
-                        # Replace the old module in-place
-                        # Find parent and replace
+                        # Remplacer l'ancien module sur place
+                        # On doit parcourir les attributs du parent pour faire le remplacement
                         for parent_name, parent in column.named_children():
                             if parent is module:
                                 setattr(column, parent_name, new_linear)
