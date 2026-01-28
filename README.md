@@ -6,9 +6,9 @@ Le papier étudiant l'application à la reconnaissance des émotions : chrome-ex
 
 
 Le fichier demo.py est le seul fichier à lancer pour faire tourner la démo.
-Bien s'assurer d'avoir les bibliothèques listées dans requirements.txt installées.
+Bien s'assurer d'avoir les bibliothèques listées dans requirements.txt installées. La démo fonctionne sur python 3.11.
 Les graphes tracés sont enregistrés dans le dossier courant.
-La démo devrait fonctionner en l'état, mais il est possible de changer certains paramètres pour essayer :
+La démo devrait fonctionner en l'état, mais il est possible de changer certains paramètres pour tester des choses :
 - TASK_ORDER : qui détermine dans quel ordre on considère les 4 tâches modélisées
 - NUM_TASKS : le nombre de tasks considérées (parmi 2, 3 ou 4)
 - prune_percents : qui détermine les % de pruning dont on teste les performances
